@@ -21,8 +21,6 @@ sys.path.append('../')
 from networks.resnet_big import SupConResNet
 from losses import SupConLoss
 
-mean = (0.485, 0.456, 0.406)
-std = (0.229, 0.224, 0.225)
 dim_z = 120
 
 
@@ -53,9 +51,9 @@ def parse_option():
                         help='reduction ratio of the nonlinear MLP walker')
 
     # data space transformation tx
-    parser.add_argument('--simclr_aug', action='store_true', help='whether to use simclr transforms')
-    parser.add_argument('--removeCrop', action='store_true', help='whether to remove RRC from simclr transforms')
-    parser.add_argument('--removeColor', action='store_true', help='whether to remove color augs from simclr transforms')
+    parser.add_argument('--simclr_aug', action='store_true', help='use full data augs')
+    parser.add_argument('--removeCrop', action='store_true', help='remove random crop from data augs')
+    parser.add_argument('--removeColor', action='store_true', help='remove random color from data augs')
 
     parser.add_argument('--trial', type=str, default='0', help='id for recording multiple runs')
 
@@ -64,39 +62,27 @@ def parse_option():
     desc = 'w_COPGen_SimCLR_{}_{}Samples_bsz{}_imgsz{}_lrWalk{}_lrMI{}_beta1={}_beta2={}_temp{}_reduRat{}_L2={}_trial{}'.format(
         opt.backbone, opt.num_samples, opt.batch_size, opt.img_size, opt.lr_walk, opt.lr_MI, opt.beta1, opt.beta2, opt.temp, opt.reduction_ratio, opt.weight_decay, opt.trial)
 
-    opt.ckpt_folder = os.path.join(opt.save_folder, 'ckpts', desc)
-    opt.tb_folder = os.path.join(opt.save_folder, 'tensorboard', desc)
-
     if opt.simclr_aug:
-        opt.ckpt_folder += '_simclrAug'
-        opt.tb_folder += '_simclrAug'
-
+        desc += '_simclrAug'
     elif opt.removeCrop:
-        opt.ckpt_folder += '_removeCrop'
-        opt.tb_folder += '_removeCrop'
-
+        desc += '_removeCrop'
     elif opt.removeColor:
-        opt.ckpt_folder += '_removeColor'
-        opt.tb_folder += '_removeColor'
-
+        desc += '_removeColor'
     else:
-        opt.ckpt_folder += '_NOsimclrAug'
-        opt.tb_folder += '_NOsimclrAug'
+        desc += '_NOsimclrAug'
 
     if opt.walker_type == 'nonlinear':
-        opt.ckpt_folder += '_z+NN(z)'
-        opt.tb_folder += '_z+NN(z)'
-
+        desc += '_z+NN(z)'
     elif opt.walker_type == 'linear':
-        opt.ckpt_folder += '_z+W2W1z'
-        opt.tb_folder += '_z+W2W1z'
-
+        desc += '_z+W2W1z'
     else:
         raise ValueError('walker type not supported: {}'.format(opt.walker_type))
 
+    opt.ckpt_folder = os.path.join(opt.save_folder, 'ckpts', desc)
+    opt.tb_folder = os.path.join(opt.save_folder, 'tensorboard', desc)
+
     if not os.path.isdir(opt.ckpt_folder):
         os.makedirs(opt.ckpt_folder)
-
     if not os.path.isdir(opt.tb_folder):
         os.makedirs(opt.tb_folder)
 
@@ -183,11 +169,16 @@ def transform(imgs, out_size, opt):
     imgs = (imgs + 1) / 2.0     # values: (-1, 1) to (0, 1)
     imgs_resized = torch.zeros([imgs.shape[0], 3, int(out_size), int(out_size)])
 
+    mean = (0.485, 0.456, 0.406)
+    std = (0.229, 0.224, 0.225)
+
     if opt.simclr_aug:
         img_transform = transforms.Compose([
             transforms.RandomResizedCrop(size=int(out_size), scale=(0.2, 1.)),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+            transforms.RandomApply([
+                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+            ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
             transforms.Normalize(mean=mean, std=std),
         ])
@@ -195,7 +186,9 @@ def transform(imgs, out_size, opt):
         img_transform = transforms.Compose([
             transforms.Resize(int(out_size)),
             transforms.RandomHorizontalFlip(),
-            transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+            transforms.RandomApply([
+                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
+            ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
             transforms.Normalize(mean=mean, std=std),
         ])

@@ -24,17 +24,17 @@ Beolow gives the training losses of the navigator and the mutual infomation esti
 
 <img src='figures/minimax_loss.png' width=700>
 
-We also monitor the mean and std of the navigator during training as an auxiliary monitor signal for terminating the training process,
-as shown in the figure below.
+By default, we decided the termination (choice of navigator checkpoint) by simply watching the qualtity of generated positive pairs, 
+which will be saved at `cop_gen/walk_weights_bigbigan/ckpts/name_of_experiment/images`.
+
+We also monitor the mean and std of the navigator during training and compare them with the prior value investigated in [GenRep](https://github.com/ali-design/GenRep) Gaussian method.
+This is used as an auxiliary monitor signal for termination, as shown in the figure below.
 
 <img src='figures/Tz_mean_std.png' width=700>
 
-A simple and effective way is to watch the qualtity of generated positive pairs, 
-which will be saved at `cop_gen/walk_weights_bigbigan/ckpts/name_of_experiment/images`.
 
 ### Note
-Since the final performance is affected by the choice of navigator checkpoint 
-(i.e., when to terminate the training process),
+Since the final performance is affected by the choice of navigator checkpoint,
 we here provide our [trained navigator checkpoint](./PretrainedModels/navigator_bigbigan128/w_COPGen_pretained.pth) for the following experiments, 
 to reproduce quantitative and qualitative results in the paper.
 
@@ -75,7 +75,7 @@ for quickly evaluating downstream performances.
 Run the following command to train a linear classifier on top of the trained encoder.
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 python main_linear.py \
-  --ckpt=/path/to/trained/contrastive/encoders \
+  --ckpt=/path/to/trained/contrastive/encoder \
   --data_folder=/path/to/ImageNet1k \
   --dataset=bigbigan_sweet \
   --save_folder=/path/to/save/linear/models \

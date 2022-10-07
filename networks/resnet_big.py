@@ -150,20 +150,6 @@ model_dict = {
 }
 
 
-class LinearBatchNorm(nn.Module):
-    """Implements BatchNorm1d by BatchNorm2d, for SyncBN purpose"""
-    def __init__(self, dim, affine=True):
-        super(LinearBatchNorm, self).__init__()
-        self.dim = dim
-        self.bn = nn.BatchNorm2d(dim, affine=affine)
-
-    def forward(self, x):
-        x = x.view(-1, self.dim, 1, 1)
-        x = self.bn(x)
-        x = x.view(-1, self.dim)
-        return x
-
-
 class SupConResNet(nn.Module):
     """backbone + projection head"""
     def __init__(self, name='resnet50', img_size=256, in_channel=3, head='mlp', feat_dim=128):

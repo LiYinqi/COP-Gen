@@ -1,16 +1,16 @@
 from __future__ import print_function
 
 import math
+import os
+import glob
+import random
+import pickle
 import numpy as np
+from PIL import Image
+
 import torch
 import torch.optim as optim
 from torch.utils.data import Dataset
-
-import glob
-import os
-from PIL import Image
-import random
-import pickle
 
 
 class TwoCropTransform:
@@ -117,6 +117,7 @@ def save_linear_model(model, classifier, optimizer, opt, epoch, save_file):
     del state
 
 
+# GenRep Gaussian Method: https://github.com/ali-design/GenRep/blob/992e571ad1ba94cd40311fe79a0276be13158805/util.py#L404
 class GansetDataset(Dataset):
     """The idea is to load the anchor image and its neighbor"""
 
@@ -130,7 +131,7 @@ class GansetDataset(Dataset):
             walktype: whether we are moving in a gaussian ball or a uniform ball
         """
         super(GansetDataset, self).__init__()
-        self.numcontrast = numcontrast          # 1
+        self.numcontrast = numcontrast
         self.neighbor_std = neighbor_std
         self.uniformb = uniformb
         self.root_dir = root_dir
@@ -228,6 +229,7 @@ class GansetDataset(Dataset):
             return image, image_neighbor, label, label_class
 
 
+# GenRep Steering Method: https://github.com/ali-design/GenRep/blob/992e571ad1ba94cd40311fe79a0276be13158805/util.py#L517
 class GansteerDataset(Dataset):
     """The idea is to load the negative-alpha image and its neighbor (positive-alpha)"""
 
@@ -295,6 +297,7 @@ class GansteerDataset(Dataset):
         return image, image_neighbor, label
 
 
+# GenRep Random Method (for SupCon only)
 class GanRandDataset(Dataset):
 
     def __init__(self, root_dir, transform=None):
@@ -346,6 +349,7 @@ class GanRandDataset(Dataset):
         return image, image_neighbor, label
 
 
+# COP-Gen (Load generated contrastive optimal dataset)
 class GanSweetDataset(Dataset):
 
     def __init__(self, root_dir, transform=None):

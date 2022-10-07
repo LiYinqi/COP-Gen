@@ -1,24 +1,23 @@
 from __future__ import print_function
 
-import numpy as np
 import os
 import sys
 import argparse
 import time
 import math
+import numpy as np
+import oyaml as yaml
+import tensorboard_logger as tb_logger
 
 import torch
 import torch.backends.cudnn as cudnn
 from torchvision import transforms, datasets
-import tensorboard_logger as tb_logger
 
 from util import TwoCropTransform, AverageMeter, GansetDataset, GansteerDataset, GanRandDataset, GanSweetDataset
 from util import adjust_learning_rate, warmup_learning_rate
 from util import set_optimizer, save_model
 from networks.resnet_big import SupConResNet
 from losses import SupConLoss
-import oyaml as yaml
-import json
 
 
 def parse_option():
@@ -41,21 +40,18 @@ def parse_option():
     parser.add_argument('--weight_decay', type=float, default=1e-4, help='weight decay')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
 
-    # model and dataset
+    # model and dataset (latent space transformations)
     parser.add_argument('--model', type=str, default='resnet50')
     parser.add_argument('--dataset', type=str, default='imagenet',
                         choices=['biggan_anchor', 'biggan_random', 'biggan_gauss', 'biggan_steer', 'biggan_sweet',
                                  'bigbigan_anchor', 'bigbigan_gauss', 'bigbigan_steer', 'bigbigan_sweet',
-                                 'mnist', 'cifar10', 'cifar100', 'imagenet100', 'imagenet'], help='dataset')
+                                 'mnist', 'imagenet100', 'imagenet'], help='dataset')
 
-    # method
-    parser.add_argument('--ratiodata', type=float, default=1.0, help='ratio of the data')
-    parser.add_argument('--numcontrast', type=int, default=1, help='num of neighbors')
+    # method and image space transformations
     parser.add_argument('--method', type=str, default='SimCLR', choices=['SupCon', 'SimCLR'], help='choose method')
-    parser.add_argument('--removeimtf', action='store_true', help='whether to remove all simclr transforms, but remain center crop')
-    parser.add_argument('--removeCrop', action='store_true', help='whether to remove RRC from simclr transforms')
-    parser.add_argument('--removeColor', action='store_true', help='whether to remove color augs from simclr transforms')
-    parser.add_argument('--remainCropOnly', action='store_true', help='whether to remove simclr transforms, and remain random resized crop only')
+    parser.add_argument('--removeimtf', action='store_true', help='remove all data space augs, remain center crop')
+    parser.add_argument('--removeCrop', action='store_true', help='remove random crop from data augs')
+    parser.add_argument('--removeColor', action='store_true', help='remove random color from data augs')
 
     # temperature
     parser.add_argument('--temp', type=float, default=0.1, help='temperature for loss function')
@@ -76,9 +72,9 @@ def parse_option():
     for it in iterations:
         opt.lr_decay_epochs.append(int(it))
 
-    opt.model_name = '{}_{}_{}_ncontrast{}_ratiodata{}_lr{}_decay{}_bsz{}_temp{}_trial{}_CLepoch{}'. \
-        format(opt.method, opt.dataset, opt.model, opt.numcontrast, opt.ratiodata, opt.learning_rate,
-               opt.weight_decay, opt.batch_size, opt.temp, opt.trial, opt.epochs)
+    opt.model_name = '{}_{}_{}_epoch{}_lr{}_decay{}_bsz{}_temp{}_trial{}'. \
+        format(opt.method, opt.dataset, opt.model, opt.epochs, opt.learning_rate,
+               opt.weight_decay, opt.batch_size, opt.temp, opt.trial)
 
     if opt.removeimtf:
         opt.model_name = '{}_noimtf'.format(opt.model_name)
@@ -88,9 +84,6 @@ def parse_option():
 
     if opt.removeColor:
         opt.model_name = '{}_noColor'.format(opt.model_name)
-
-    if opt.remainCropOnly:
-        opt.model_name = '{}_onlyRRCimtf'.format(opt.model_name)
 
     if opt.cosine:
         opt.model_name = '{}_cosine'.format(opt.model_name)
@@ -106,7 +99,8 @@ def parse_option():
         opt.warm_epochs = 10
         if opt.cosine:
             eta_min = opt.learning_rate * (opt.lr_decay_rate ** 3)
-            opt.warmup_to = eta_min + (opt.learning_rate - eta_min) * (1 + math.cos(math.pi * opt.warm_epochs / opt.epochs)) / 2
+            opt.warmup_to = eta_min + (opt.learning_rate - eta_min) * (
+                    1 + math.cos(math.pi * opt.warm_epochs / opt.epochs)) / 2
         else:
             opt.warmup_to = opt.learning_rate
 
@@ -122,14 +116,6 @@ def parse_option():
         opt.img_size = 128
         opt.img_dim = 3
         opt.n_cls = 1000
-    elif opt.dataset == 'cifar10' or 'cifar10_' in opt.dataset:
-        opt.img_size = 32
-        opt.img_dim = 3
-        opt.n_cls = 10
-    elif opt.dataset == 'cifar100':
-        opt.img_size = 32
-        opt.img_dim = 3
-        opt.n_cls = 100
     elif 'mnist' in opt.dataset:
         opt.img_size = 28
         opt.img_dim = 1
@@ -142,13 +128,7 @@ def parse_option():
 
 def set_loader(opt):
     # construct data loader
-    if opt.dataset == 'cifar10' or 'cifar10_' in opt.dataset:
-        mean = (0.4914, 0.4822, 0.4465)
-        std = (0.2023, 0.1994, 0.2010)
-    elif opt.dataset == 'cifar100':
-        mean = (0.5071, 0.4867, 0.4408)
-        std = (0.2675, 0.2565, 0.2761)
-    elif 'biggan' in opt.dataset or 'bigbigan' in opt.dataset or 'imagenet' in opt.dataset:
+    if 'biggan' in opt.dataset or 'bigbigan' in opt.dataset or 'imagenet' in opt.dataset:
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
     elif 'mnist' in opt.dataset:
@@ -160,9 +140,10 @@ def set_loader(opt):
     opt.mean = mean
     opt.std = std
 
+    # ImageNet transforms
     if opt.removeimtf:
         train_transform = transforms.Compose([
-            transforms.CenterCrop(size=int(opt.img_size*0.875)),
+            transforms.CenterCrop(size=int(opt.img_size * 0.875)),
             transforms.Resize(size=int(opt.img_size)),
             transforms.ToTensor(),
             normalize,
@@ -186,12 +167,6 @@ def set_loader(opt):
             transforms.ToTensor(),
             normalize,
         ])
-    elif opt.remainCropOnly:
-        train_transform = transforms.Compose([
-            transforms.RandomResizedCrop(size=int(opt.img_size), scale=(0.2, 1.)),
-            transforms.ToTensor(),
-            normalize,
-        ])
     else:
         train_transform = transforms.Compose([
             transforms.RandomResizedCrop(size=int(opt.img_size), scale=(0.2, 1.)),
@@ -204,6 +179,7 @@ def set_loader(opt):
             normalize,
         ])
 
+    # MNIST transforms
     if 'mnist' in opt.dataset:
         train_transform = transforms.Compose([
             transforms.RandomAffine(degrees=10,
@@ -216,25 +192,17 @@ def set_loader(opt):
         train_dataset = datasets.MNIST(root=opt.data_folder,
                                        transform=TwoCropTransform(train_transform))
 
-    elif opt.dataset == 'cifar10':
-        train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                         transform=TwoCropTransform(train_transform))
-
-    elif opt.dataset == 'cifar100':
-        train_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                          transform=TwoCropTransform(train_transform))
-
     elif opt.dataset == 'imagenet100' or opt.dataset == 'imagenet' or 'anchor' in opt.dataset:
         train_dataset = datasets.ImageFolder(root=os.path.join(opt.data_folder, 'train'),
                                              transform=TwoCropTransform(train_transform))
 
     elif 'gauss' in opt.dataset:
         train_dataset = GansetDataset(root_dir=os.path.join(opt.data_folder, 'train'),
-                                      transform=train_transform, numcontrast=opt.numcontrast, ratio_data=opt.ratiodata)
+                                      transform=train_transform, numcontrast=1, ratio_data=1.0)
 
     elif 'steer' in opt.dataset:
         train_dataset = GansteerDataset(root_dir=os.path.join(opt.data_folder, 'train'),
-                                        transform=train_transform, numcontrast=opt.numcontrast)
+                                        transform=train_transform, numcontrast=1)
 
     elif 'sweet' in opt.dataset:
         train_dataset = GanSweetDataset(root_dir=os.path.join(opt.data_folder, 'train'),
@@ -242,7 +210,7 @@ def set_loader(opt):
 
     elif opt.dataset == 'biggan_random':
         train_dataset = GanRandDataset(root_dir=os.path.join(opt.data_folder, 'train'),
-                                      transform=train_transform)
+                                       transform=train_transform)
 
     else:
         raise ValueError(opt.dataset)
@@ -277,22 +245,11 @@ def train(train_loader, model, criterion, optimizer, epoch, opt, grad_update, cl
     data_time = AverageMeter()
     losses = AverageMeter()
 
-    top1 = AverageMeter()
     end = time.time()
 
     print("Start train")
 
-    ############# Comments from GenRep, we set ratiodata = 1 in our experiments #############
-    # Size_dataset always should be 1.3M for imagenet1K and 130K for imagenet100
-    # the ratiodata means how many unique images we have compared to the original dataset
-    # if ratiodata < 1, we just repeat the dataset in the dataloader 1 / ratiodata times.
-    # When ratiodata > 1, we train for 1 / ratiodata times, to keep the number of grad updates constant
-
-    # iter_epoch is how many iterations every epoch has, so it will be len(data)/batch_size for ratio < 1
-    # and len(data/ratio) / batch_size for the above reason
-    #########################################################################################
-
-    size_dataset = len(train_loader.dataset) / max(opt.ratiodata, 1)
+    size_dataset = len(train_loader.dataset)
 
     # how many iterations per epoch
     iter_epoch = int(size_dataset / opt.batch_size)
@@ -361,8 +318,8 @@ def train(train_loader, model, criterion, optimizer, epoch, opt, grad_update, cl
                   'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'loss {loss.val:.3f} ({loss.avg:.3f})'.format(
-                  epoch, idx + 1, len(train_loader), batch_time=batch_time,
-                  data_time=data_time, loss=losses))
+                   epoch, idx + 1, len(train_loader), batch_time=batch_time,
+                   data_time=data_time, loss=losses))
             sys.stdout.flush()
 
         if (idx + 1) % iter_epoch == 0 or (epoch == 1 and idx == 0):
@@ -404,7 +361,7 @@ def main():
         model_ckp = torch.load(opt.resume)
         state_dict = model_ckp['model']
 
-        # For loading 1 gpu trained ckpt on >=2 gpus ONLY
+        # NOTE: uncomment the following codes for loading 1 GPU trained ckpt on >1 GPUs
         # new_state_dict = {}
         # update = False
         # for k, v in state_dict.items():
@@ -426,13 +383,9 @@ def main():
         model.load_state_dict(state_dict)
         optimizer.load_state_dict(model_ckp['optimizer'])
 
-    skip_epoch = 1
-    if opt.ratiodata > 1:
-        skip_epoch = int(opt.ratiodata)
-
     grad_update = 0
     class_count = np.zeros(1000)
-    for epoch in range(init_epoch, opt.epochs + 1, skip_epoch):
+    for epoch in range(init_epoch, opt.epochs + 1, 1):
 
         # train for one epoch
         time1 = time.time()
@@ -440,16 +393,10 @@ def main():
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
 
-        if opt.ratiodata <= 1:
-            if epoch % opt.save_freq == 0 or epoch == 1:
-                save_file = os.path.join(
-                    opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
-                save_model(model, optimizer, opt, epoch, grad_update, class_count, save_file)
-        else:
-            if epoch % opt.save_freq == 1:
-                save_file = os.path.join(
-                    opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
-                save_model(model, optimizer, opt, epoch, grad_update, class_count, save_file)
+        if epoch % opt.save_freq == 0 or epoch == 1:
+            save_file = os.path.join(
+                opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
+            save_model(model, optimizer, opt, epoch, grad_update, class_count, save_file)
 
     # save the last model
     save_file = os.path.join(

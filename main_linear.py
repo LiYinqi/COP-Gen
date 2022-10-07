@@ -5,17 +5,15 @@ import sys
 import argparse
 import time
 import math
-import ipdb
+import tensorboard_logger as tb_logger
+
 import torch
 import torch.backends.cudnn as cudnn
-
 from torchvision import transforms, datasets
-import tensorboard_logger as tb_logger
+
 from util import AverageMeter
 from util import adjust_learning_rate, warmup_learning_rate, accuracy
-from torchnet.meter import mAPMeter
 from util import set_optimizer, save_linear_model
-
 from networks.resnet_big import SupConResNet, LinearClassifier
 
 
@@ -23,7 +21,7 @@ def parse_option():
     parser = argparse.ArgumentParser('argument for training')
 
     parser.add_argument('--print_freq', type=int, default=10, help='print frequency')
-    parser.add_argument('--save_freq', type=int, default=60, help='save frequency')
+    parser.add_argument('--save_freq', type=int, default=10, help='save frequency')
     parser.add_argument('--batch_size', type=int, default=224, help='batch_size')
     parser.add_argument('--num_workers', type=int, default=32, help='num of workers to use')
     parser.add_argument('--epochs', type=int, default=60, help='number of training epochs')
@@ -44,12 +42,12 @@ def parse_option():
     parser.add_argument('--dataset', type=str, default='imagenet',
                         choices=['biggan_anchor', 'biggan_random', 'biggan_gauss', 'biggan_steer', 'biggan_sweet',
                                  'bigbigan_anchor', 'bigbigan_gauss', 'bigbigan_steer', 'bigbigan_sweet',
-                                 'mnist', 'cifar10', 'cifar100', 'imagenet100', 'imagenet'], help='dataset')
+                                 'mnist', 'imagenet100', 'imagenet'], help='dataset')
 
-    # Pretrained ckpt
-    parser.add_argument('--ckpt', type=str, default='/path/to/contrastive/pretrained/model', help='path to pre-trained model')
-    parser.add_argument('--setting1k_CLepoch', type=int, default=100)
-    parser.add_argument('--desc', type=str, default=None, help='description of the model')
+    # pretrained contrastive encoder
+    parser.add_argument('--ckpt', type=str, default='/path/to/trained/contrastive/encoder', help='path to pre-trained model')
+    parser.add_argument('--setting1k_CLepoch', type=int, default=100, help="contrastive training epochs, IN1k setting, for distinguishing different encoders")
+    parser.add_argument('--desc', type=str, default=None, help='description of the encoder')
 
     # specifying folders
     parser.add_argument('-d', '--data_folder', type=str, default='./ImageNet1k', help='the folder of the dataset you want to evaluate')
@@ -77,28 +75,19 @@ def parse_option():
         opt.tb_path = os.path.join(opt.save_folder, 'linearEva_tensorboards_100')
         opt.model_path = os.path.join(opt.save_folder, 'linearEva_models_100')
     elif 'ImageNet1k' in opt.data_folder:
-        opt.tb_path = os.path.join(opt.save_folder, 'linearEva_tensorboards_1k')
-        opt.model_path = os.path.join(opt.save_folder, 'linearEva_models_1k')
-        opt.tb_path += '_ptr{}epo'.format(opt.setting1k_CLepoch)
-        opt.model_path += '_ptr{}epo'.format(opt.setting1k_CLepoch)
-        opt.save_freq = 10
-    elif 'CIFAR10' == opt.data_folder[-7:]:
-        opt.tb_path = os.path.join(opt.save_folder, 'linearEva_tensorboards_cifar10')
-        opt.model_path = os.path.join(opt.save_folder, 'linearEva_models_cifar10')
-        opt.save_freq = 90
+        opt.tb_path = os.path.join(opt.save_folder, 'linearEva_tensorboards_1k_ptr{}epo'.format(opt.setting1k_CLepoch))
+        opt.model_path = os.path.join(opt.save_folder, 'linearEva_models_1k_ptr{}epo'.format(opt.setting1k_CLepoch))
     elif 'MNIST' in opt.data_folder:
         opt.tb_path = os.path.join(opt.save_folder, 'linearEva_tensorboards_mnist')
         opt.model_path = os.path.join(opt.save_folder, 'linearEva_models_mnist')
-        opt.save_freq = 90
     else:
-        raise NotImplementedError
+        raise ValueError('We use opt.data_folder to distinguish different datasets, {} is not supported'.format(opt.data_folder))
 
-    opt.tb_folder = os.path.join(opt.tb_path, '{}_{}_lr{}_bs{}_epo{}'.format(opt.method, opt.dataset, opt.learning_rate, opt.batch_size, opt.epochs)).strip()
-    opt.model_folder = os.path.join(opt.model_path, '{}_{}_lr{}_bs{}_epo{}'.format(opt.method, opt.dataset, opt.learning_rate, opt.batch_size, opt.epochs)).strip()
-
+    desc = '{}_{}_lr{}_bs{}_epo{}'.format(opt.method, opt.dataset, opt.learning_rate, opt.batch_size, opt.epochs)
     if opt.desc is not None:
-        opt.tb_folder += opt.desc
-        opt.model_folder += opt.desc
+        desc += opt.desc
+    opt.tb_folder = os.path.join(opt.tb_path, desc).strip()
+    opt.model_folder = os.path.join(opt.model_path, desc).strip()
 
     if not os.path.isdir(opt.tb_folder):
         os.makedirs(opt.tb_folder)
@@ -109,14 +98,6 @@ def parse_option():
         opt.img_size = 128
         opt.img_dim = 3
         opt.n_cls = 1000
-    elif opt.dataset == 'cifar10':
-        opt.img_size = 32
-        opt.img_dim = 3
-        opt.n_cls = 10
-    elif opt.dataset == 'cifar100':
-        opt.img_size = 32
-        opt.img_dim = 3
-        opt.n_cls = 100
     elif 'mnist' in opt.dataset:
         opt.img_size = 28
         opt.img_dim = 1
@@ -129,49 +110,28 @@ def parse_option():
 
 def set_loader(opt):
     # construct data loader
-    if opt.dataset == 'cifar10':
-        mean = (0.4914, 0.4822, 0.4465)
-        std = (0.2023, 0.1994, 0.2010)
-    elif opt.dataset == 'cifar100':
-        mean = (0.5071, 0.4867, 0.4408)
-        std = (0.2675, 0.2565, 0.2761)
-    elif 'gan' in opt.dataset or 'imagenet' in opt.dataset:
+    if 'gan' in opt.dataset or 'imagenet' in opt.dataset:
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
-    elif 'mnist' in opt.dataset:
-        mean = None
-        std = None
-    else:
-        raise ValueError('dataset not supported: {}'.format(opt.dataset))
-    normalize = transforms.Normalize(mean=mean, std=std)
-
-    if 'gan' in opt.dataset or 'imagenet' in opt.dataset:
+        normalize = transforms.Normalize(mean=mean, std=std)
         train_transform = transforms.Compose([
             transforms.RandomResizedCrop(int(opt.img_size), scale=(0.2, 1.)),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
         ])
-        # Todo: arg this 256
         val_transform = transforms.Compose([
             transforms.Resize(int(opt.img_size / 0.875)),       # 128/0.875
             transforms.CenterCrop(int(opt.img_size)),           # 128
             transforms.ToTensor(),
             normalize,
         ])
-    else:
-        train_transform = transforms.Compose([
-            transforms.RandomResizedCrop(size=opt.img_size, scale=(0.2, 1.)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ])
-        val_transform = transforms.Compose([
-            transforms.ToTensor(),
-            normalize,
-        ])
+        train_dataset = datasets.ImageFolder(root=os.path.join(opt.data_folder, 'train'),
+                                             transform=train_transform)
+        val_dataset = datasets.ImageFolder(root=os.path.join(opt.data_folder, 'val'),
+                                           transform=val_transform)
 
-    if 'mnist' in opt.dataset:
+    elif 'mnist' in opt.dataset:
         transform = transforms.Compose([
             transforms.ToTensor(),
         ])
@@ -179,23 +139,9 @@ def set_loader(opt):
                                        transform=transform)
         val_dataset = datasets.MNIST(root=opt.data_folder, train=False,
                                      transform=transform)
-    elif opt.dataset == 'cifar10':
-        train_dataset = datasets.CIFAR10(root=opt.data_folder,
-                                         transform=train_transform)
-        val_dataset = datasets.CIFAR10(root=opt.data_folder, train=False,
-                                       transform=val_transform)
-    elif opt.dataset == 'cifar100':
-        train_dataset = datasets.CIFAR100(root=opt.data_folder,
-                                          transform=train_transform)
-        val_dataset = datasets.CIFAR100(root=opt.data_folder, train=False,
-                                        transform=val_transform)
-    elif 'gan' in opt.dataset or 'imagenet' in opt.dataset:
-        train_dataset = datasets.ImageFolder(root=os.path.join(opt.data_folder, 'train'),
-                                             transform=train_transform)
-        val_dataset = datasets.ImageFolder(root=os.path.join(opt.data_folder, 'val'),
-                                           transform=val_transform)
+
     else:
-        raise ValueError(opt.dataset)
+        raise ValueError('dataset not supported: {}'.format(opt.dataset))
 
     train_sampler = None
     train_loader = torch.utils.data.DataLoader(
@@ -225,7 +171,7 @@ def set_model(opt):
             #     if "encoder.module" not in k:
             #         k = k.replace("encoder", "encoder.module")
             #         new_state_dict[k] = v
-            #         state_dict = new_state_dict
+            # state_dict = new_state_dict
         else:
             new_state_dict = {}
             for k, v in state_dict.items():
@@ -236,7 +182,6 @@ def set_model(opt):
         classifier = classifier.cuda()
         criterion = criterion.cuda()
         cudnn.benchmark = True
-        # ipdb.set_trace()
         model.load_state_dict(state_dict,  strict=False)
 
     return model, classifier, criterion
@@ -251,7 +196,6 @@ def train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
     data_time = AverageMeter()
     losses = AverageMeter()
     top1 = AverageMeter()
-    meanAPmetric = mAPMeter()
 
     end = time.time()
     for idx, (images, labels) in enumerate(train_loader):
@@ -267,7 +211,6 @@ def train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
         # compute loss
         with torch.no_grad():
             features = model.encoder(images)
-
         output = classifier(features.detach())
         loss = criterion(output, labels)
 
@@ -292,8 +235,8 @@ def train(train_loader, model, classifier, criterion, optimizer, epoch, opt):
                   'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'loss {loss.val:.3f} ({loss.avg:.3f})\t'
                   'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
-                epoch, idx + 1, len(train_loader), batch_time=batch_time,
-                data_time=data_time, loss=losses, top1=top1))
+                   epoch, idx + 1, len(train_loader), batch_time=batch_time,
+                   data_time=data_time, loss=losses, top1=top1))
             sys.stdout.flush()
 
     return losses.avg, top1.avg
@@ -308,7 +251,6 @@ def validate(val_loader, model, classifier, criterion, opt):
     losses = AverageMeter()
     top1 = AverageMeter()
     top5 = AverageMeter()
-    meanAPmetric = mAPMeter()
 
     with torch.no_grad():
         end = time.time()
@@ -337,9 +279,8 @@ def validate(val_loader, model, classifier, criterion, opt):
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                       'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'
                       'Acc@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                    idx, len(val_loader), batch_time=batch_time,
-                    loss=losses, top1=top1, top5=top5))
-
+                       idx, len(val_loader), batch_time=batch_time,
+                       loss=losses, top1=top1, top5=top5))
 
     print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
     print(' * Acc@5 {top5.avg:.3f}'.format(top5=top5))

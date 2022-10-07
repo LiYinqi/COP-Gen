@@ -1,3 +1,7 @@
+"""
+Author: Yonglong Tian (yonglong@mit.edu)
+Date: May 07, 2020
+"""
 from __future__ import print_function
 
 import torch
@@ -18,7 +22,6 @@ class SupConLoss(nn.Module):
         """Compute loss for model. If both `labels` and `mask` are None,
         it degenerates to SimCLR unsupervised loss:
         https://arxiv.org/pdf/2002.05709.pdf
-
         Args:
             features: hidden vector of shape [bsz, n_views, ...].
             labels: ground truth of shape [bsz].
@@ -40,9 +43,9 @@ class SupConLoss(nn.Module):
         batch_size = features.shape[0]
         if labels is not None and mask is not None:
             raise ValueError('Cannot define both `labels` and `mask`')
-        elif labels is None and mask is None:           # SimCLR
+        elif labels is None and mask is None:
             mask = torch.eye(batch_size, dtype=torch.float32).to(device)
-        elif labels is not None:                        # SupCon
+        elif labels is not None:
             labels = labels.contiguous().view(-1, 1)
             if labels.shape[0] != batch_size:
                 raise ValueError('Num of labels does not match num of features')
@@ -92,26 +95,3 @@ class SupConLoss(nn.Module):
         loss = loss.view(anchor_count, batch_size).mean()
 
         return loss
-
-
-class SupInverterLoss(nn.Module):
-    def __init__(self):
-        super(SupInverterLoss, self).__init__()
-        self.loss_z = nn.MSELoss()
-        self.loss_y = nn.CrossEntropyLoss()
-
-    def forward(self, features, z_batch, labels):
-        loss_z = self.loss_z(features[0], z_batch)
-        loss_y = self.loss_y(features[1], labels)#torch.tensor(idx, dtype=torch.int64))
-        loss = loss_z + loss_y
-        return loss, loss_z, loss_y
-
-
-class UnsupInverterLoss(nn.Module):
-    def __init__(self):
-        super(UnsupInverterLoss, self).__init__()
-        self.loss_z = nn.MSELoss()
-
-    def forward(self, features, z_batch):
-        loss_z = self.loss_z(features, z_batch)
-        return loss_z

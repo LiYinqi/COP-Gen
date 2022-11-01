@@ -1,6 +1,12 @@
 # COP-Gen
 
-This repo is the official code of COP-Gen, for reproducing the results of our paper.
+Official code for the paper:
+<br>
+"Optimal Positive Generation via Latent Transformation for Contrastive Learning"
+<br>
+Yinqi Li, Hong Chang, Bingpeng Ma, Shiguang Shan, Xilin Chen
+<br>
+NeurIPS 2022
 
 
 ## Requirements
@@ -8,6 +14,7 @@ This repo is the official code of COP-Gen, for reproducing the results of our pa
 - Linux
 - Python 3.8
 - PyTorch 1.7.1
+- [PyTorch Pretrained GANs 0.0.1](https://github.com/lukemelas/pytorch-pretrained-gans)
 
 
 ## Navigator Training
@@ -91,7 +98,7 @@ where:
 
 ## Transfer Detection
 Follow the steps below to evaluate the pretrained contrastive encoder on Pascal VOC.
-1. Install [detectron2](https://detectron2.readthedocs.io/en/latest/tutorials/install.html)
+1. [Install detectron2](https://detectron2.readthedocs.io/en/latest/tutorials/install.html)
 2. Convert the pretrained encoder to detectron2's format:
 ```bash
 cd transfer_detection
@@ -119,8 +126,8 @@ CUDA_VISIBLE_DEVICES=0,1 python train_net.py \
 
 ## Transfer Classification and Semi-Supervised Learning
 Follow the steps below to evaluate the pretrained contrastive encoder on transfer classification and semi-supervised learning tasks.
-1. Install [VISSL](https://vissl.readthedocs.io/en/v0.1.6/installation.html) and you will get a `vissl` folder under your `/home/user` directory.
-2. Convert the pretrained encoder to VISSL's format:
+1. [Install vissl](https://vissl.readthedocs.io/en/v0.1.6/installation.html) and you will get a `vissl` folder under your `/home/user` directory.
+2. Convert the pretrained encoder to vissl's format:
 ```bash
 cd transfer_classification
 python convert_ckpt.py /path/to/trained/encoder /path/to/converted/ckpt
@@ -170,7 +177,23 @@ CUDA_VISIBLE_DEVICES=0 python tools/run_distributed_engines.py \
 
 
 ## Acknowledgments
-This code is based on the following repositories:
-- [GenRep](https://github.com/ali-design/GenRep)
-- [PyTorch Pretrained GANs](https://github.com/lukemelas/pytorch-pretrained-gans)
+This code is based on the implementation of 
+[GenRep](https://github.com/ali-design/GenRep).
+We also thank the authors of [PyTorch Pretrained GANs](https://github.com/lukemelas/pytorch-pretrained-gans) 
+and [PyTorch Pretrained BigGAN](https://github.com/huggingface/pytorch-pretrained-BigGAN) repos
+for releasing the pretrained generative models,
+and the authors of [Detectron2](https://github.com/facebookresearch/detectron2)
+and [VISSL](https://github.com/facebookresearch/vissl) repos
+for implementing the downstream tasks.
 
+
+## Citation
+If you find this code useful, please consider citing our paper:
+```
+@inproceedings{li2022optimal,
+  title={Optimal Positive Generation via Latent Transformation for Contrastive Learning},
+  author={Yinqi Li and Hong Chang and Bingpeng Ma and Shiguang Shan and Xilin Chen},
+  booktitle={Advances in Neural Information Processing Systems},
+  year={2022}
+}
+```
